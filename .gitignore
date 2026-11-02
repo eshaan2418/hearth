@@ -1,0 +1,5 @@
+build*/
+NOTES.md
+bench/www/
+fuzz/corpus/
+crash-*
