@@ -249,4 +249,24 @@ TEST_F(ServerTest, ConcurrentClients) {
   EXPECT_EQ(bad.load(), 0);
 }
 
+TEST_F(ServerTest, StopDrainsInFlightResponses) {
+  const int fd = Connect(port_);
+  Send(fd, "GET /big.bin HTTP/1.1\r\nHost: x\r\n\r\n");
+  char first[1024];
+  const ssize_t got = read(fd, first, sizeof first);
+  ASSERT_GT(got, 0);  // the response has started; most of the 3 MB is still queued
+  std::thread stopper([&] { server_->Stop(5000); });
+  std::string pending(first, static_cast<std::size_t>(got));
+  std::string rest;
+  char buf[65536];
+  ssize_t n;
+  while ((n = read(fd, buf, sizeof buf)) > 0) rest.append(buf, static_cast<std::size_t>(n));
+  stopper.join();
+  pending += rest;
+  const auto e = pending.find("\r\n\r\n");
+  ASSERT_NE(e, std::string::npos);
+  EXPECT_TRUE(pending.substr(e + 4) == big_);  // the whole body arrived, then the server closed
+  close(fd);
+}
+
 }  // namespace

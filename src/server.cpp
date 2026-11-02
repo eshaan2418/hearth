@@ -95,7 +95,17 @@ class Poller {
 #endif
   }
 
-  // Closing the fd removes it from kqueue/epoll automatically.
+  void Remove(int fd) {
+#if defined(__APPLE__)
+    struct kevent ev;
+    EV_SET(&ev, fd, EVFILT_READ, EV_DELETE, 0, 0, nullptr);
+    kevent(fd_, &ev, 1, nullptr, 0, nullptr);
+#else
+    epoll_ctl(fd_, EPOLL_CTL_DEL, fd, nullptr);
+#endif
+  }
+
+  // Closing a connection fd removes it from kqueue/epoll automatically.
 
   int Wait(std::vector<PollEvent>* out, int timeout_ms) {
     out->clear();
@@ -203,7 +213,10 @@ struct Server::Worker {
     bool accepting = true;
     while (true) {
       if (stopping.load(std::memory_order_relaxed) && accepting) {
-        accepting = false;  // the listening fd is closed by Stop(); stop polling it
+        // Stop polling the shared listening fd (Stop() closes it after the workers exit);
+        // otherwise a non-empty accept queue would wake this loop continuously while draining.
+        accepting = false;
+        poller.Remove(listen_fd);
       }
       if (!accepting && (AllIdle() || Clock::now().time_since_epoch().count() > stop_deadline_ns.load())) break;
       poller.Wait(&events, 250);

@@ -1,0 +1,49 @@
+name: CI
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build clang libgtest-dev curl
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja googletest
+      - name: Build and test
+        env: { CC: clang, CXX: clang++ }
+        run: make test
+      - name: ASan + UBSan
+        env: { CC: clang, CXX: clang++ }
+        run: make asan
+      - name: TSan
+        env: { CC: clang, CXX: clang++ }
+        run: |
+          # Recent Ubuntu kernels randomise mmap more than TSan's shadow layout allows.
+          if [ "$RUNNER_OS" = Linux ]; then sudo sysctl vm.mmap_rnd_bits=28; fi
+          make tsan
+      - name: Demo
+        run: make demo
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y clang
+      - name: libFuzzer (60 s)
+        run: make fuzz CXX_FUZZ=clang++ FUZZTIME=60
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y clang-format
+      - run: make lint
