@@ -1,0 +1,1 @@
+nginx: nginx version: nginx/1.31.8

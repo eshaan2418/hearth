@@ -543,6 +543,54 @@ struct Server::Worker {
   bool Flush(Conn* c) {
     while (!c->out.empty()) {
       Chunk& ch = c->out.front();
+      if (!ch.file && c->out.size() >= 2 && c->out[1].file && !ch.data.empty()) {
+        // Response headers followed by a file: send both in one go, so the headers do not
+        // leave as a separate small packet (macOS: sendfile header vector; Linux: MSG_MORE).
+#if defined(__APPLE__)
+        Chunk& fch = c->out[1];
+        iovec hv{ch.data.data(), ch.data.size()};
+        sf_hdtr hdtr{&hv, 1, nullptr, 0};
+        off_t sent = static_cast<off_t>(ch.data.size()) + fch.length;
+        const int rc = sendfile(fch.file->fd, c->fd, fch.offset, &sent, &hdtr, 0);
+        const bool again = rc < 0 && (errno == EAGAIN || errno == EWOULDBLOCK);
+        if (rc < 0 && !again && errno != EINTR) {
+          Close(c);
+          return false;
+        }
+        bytes_sent.fetch_add(static_cast<std::uint64_t>(sent), std::memory_order_relaxed);
+        const off_t hdr = static_cast<off_t>(ch.data.size());
+        if (sent < hdr) {
+          ch.data.erase(0, static_cast<std::size_t>(sent));
+          if (again || sent == 0) return WaitWritable(c);
+          continue;
+        }
+        c->out.pop_front();
+        Chunk& f2 = c->out.front();
+        f2.offset += sent - hdr;
+        f2.length -= sent - hdr;
+        if (f2.length == 0) {
+          c->out.pop_front();
+          continue;
+        }
+        if (again || sent == hdr) return WaitWritable(c);
+        continue;
+#else
+        const ssize_t w = send(c->fd, ch.data.data(), ch.data.size(), MSG_MORE | MSG_NOSIGNAL);
+        if (w < 0) {
+          if (errno == EINTR) continue;
+          if (errno == EAGAIN || errno == EWOULDBLOCK) return WaitWritable(c);
+          Close(c);
+          return false;
+        }
+        bytes_sent.fetch_add(static_cast<std::uint64_t>(w), std::memory_order_relaxed);
+        if (static_cast<std::size_t>(w) < ch.data.size()) {
+          ch.data.erase(0, static_cast<std::size_t>(w));
+        } else {
+          c->out.pop_front();
+        }
+        continue;
+#endif
+      }
       if (!ch.file) {
         // Gather consecutive memory chunks into one writev.
         iovec iov[16];

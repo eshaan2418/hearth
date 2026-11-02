@@ -1,0 +1,1 @@
+libFuzzer (Homebrew LLVM 23, ASan+UBSan), fuzz/fuzz_parse.cpp, 2026-11-02: 24,985,622 runs in 301 s, no crashes or invariant violations.
